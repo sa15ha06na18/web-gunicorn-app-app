@@ -1,0 +1,226 @@
+import os
+import sqlite3
+from datetime import datetime, timedelta
+from flask import Flask, render_template_string, request, redirect, url_for, flash
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "library_secret_key_123")
+
+# Database File Path
+DB_FILE = 'library.db'
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# Database setup and initial sample data insertion
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Members Table Setup[cite: 1]
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS members (
+            member_id INTEGER PRIMARY KEY,
+            member_name TEXT NOT NULL,
+            member_type TEXT CHECK (member_type IN ('Student', 'Faculty')),
+            phone TEXT,
+            email TEXT
+        )
+    ''')
+    
+    # Books Table Setup[cite: 1]
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS books (
+            book_id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            author TEXT,
+            category TEXT,
+            status TEXT DEFAULT 'Available' CHECK (status IN ('Available', 'Issued'))
+        )
+    ''')
+    
+    # Book Transactions Table Setup[cite: 1]
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS book_transactions (
+            transaction_id INTEGER PRIMARY KEY,
+            book_id INTEGER,
+            member_id INTEGER,
+            issue_date TEXT,
+            due_date TEXT,
+            return_date TEXT,
+            status TEXT DEFAULT 'Issued' CHECK (status IN ('Issued', 'Returned')),
+            FOREIGN KEY (book_id) REFERENCES books (book_id),
+            FOREIGN KEY (member_id) REFERENCES members (member_id)
+        )
+    ''')
+    
+    # Sample Data (Only inserted if table is empty)[cite: 1]
+    cursor.execute("SELECT COUNT(*) FROM books")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO members VALUES (1001, 'Rahul Sharma', 'Student', '9876500001', 'rahul@mail.com')")[cite: 1]
+        cursor.execute("INSERT INTO members VALUES (1002, 'Priya Dharshini', 'Student', '9876500002', 'priya@mail.com')")[cite: 1]
+        cursor.execute("INSERT INTO books VALUES (5001, 'Database System Concepts', 'Silberschatz', 'Computer Science', 'Available')")[cite: 1]
+        cursor.execute("INSERT INTO books VALUES (5002, 'Let Us C', 'Yashavant Kanetkar', 'Programming', 'Available')")[cite: 1]
+        cursor.execute("INSERT INTO books VALUES (5003, 'Oracle SQL Complete Guide', 'Loni', 'Database', 'Available')")[cite: 1]
+        
+    conn.commit()
+    conn.close()
+
+# Combined HTML Template with Bootstrap UI
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>College Library Management System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4 shadow">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="/">📚 College Library System</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row g-4">
+            <!-- Search & Book List Section -->
+            <div class="col-lg-8">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-white fw-bold fs-5">Search Books</div>
+                    <div class="card-body">
+                        <form method="GET" action="/" class="d-flex mb-3">
+                            <input type="text" name="search" class="form-control me-2" placeholder="Search by Title or Category..." value="{{ search_query }}">
+                            <button type="submit" class="btn btn-primary px-4">Search</button>
+                        </form>
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Title</th>
+                                        <th>Author</th>
+                                        <th>Category</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for book in books %}
+                                    <tr>
+                                        <td>{{ book['book_id'] }}</td>
+                                        <td class="fw-semibold">{{ book['title'] }}</td>
+                                        <td>{{ book['author'] }}</td>
+                                        <td><span class="badge bg-secondary">{{ book['category'] }}</span></td>
+                                        <td>
+                                            <span class="badge bg-{{ 'success' if book['status'] == 'Available' else 'warning' }}">
+                                                {{ book['status'] }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="5" class="text-center text-muted">No books found</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Issue Book Action Panel -->
+            <div class="col-lg-4">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-success text-white fw-bold fs-5">Issue Book</div>
+                    <div class="card-body">
+                        <form method="POST" action="/issue">
+                            <div class="mb-3">
+                                <label class="form-label">Transaction ID</label>
+                                <input type="number" name="trans_id" class="form-control" placeholder="e.g. 7001" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Book ID</label>
+                                <input type="number" name="book_id" class="form-control" placeholder="e.g. 5001" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Member ID</label>
+                                <input type="number" name="member_id" class="form-control" placeholder="e.g. 1001" required>
+                            </div>
+                            <button type="submit" class="btn btn-success w-100 py-2 fw-bold">Issue Book</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def home():
+    search_query = request.args.get('search', '')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if search_query:
+        cursor.execute("SELECT * FROM books WHERE title LIKE ? OR category LIKE ?", (f'%{search_query}%', f'%{search_query}%'))
+    else:
+        cursor.execute("SELECT * FROM books")
+        
+    books = cursor.fetchall()
+    conn.close()
+    return render_template_string(HTML_TEMPLATE, books=books, search_query=search_query)
+
+@app.route('/issue', methods=['POST'])
+def issue_book():
+    trans_id = request.form['trans_id']
+    book_id = request.form['book_id']
+    member_id = request.form['member_id']
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check if book exists and is available[cite: 1]
+    cursor.execute("SELECT status FROM books WHERE book_id = ?", (book_id,))
+    book = cursor.fetchone()
+    
+    if not book:
+        flash('Error: Book ID not found!', 'danger')
+    elif book['status'] == 'Issued':
+        flash('Warning: Book is currently not available!', 'warning')[cite: 1]
+    else:
+        issue_date = datetime.now().strftime('%Y-%m-%d')
+        due_date = (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')[cite: 1]
+        
+        cursor.execute("INSERT INTO book_transactions VALUES (?, ?, ?, ?, ?, NULL, 'Issued')", 
+                       (trans_id, book_id, member_id, issue_date, due_date))[cite: 1]
+        cursor.execute("UPDATE books SET status = 'Issued' WHERE book_id = ?", (book_id,))[cite: 1]
+        conn.commit()
+        flash('Success: Book issued successfully!', 'success')[cite: 1]
+        
+    conn.close()
+    return redirect(url_for('home'))
+
+# Initialize database on application start
+init_db()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
